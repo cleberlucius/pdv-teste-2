@@ -41,6 +41,7 @@ if 'cardapio' not in st.session_state: st.session_state.cardapio = {}
 if 'configurado' not in st.session_state: st.session_state.configurado = False
 if 'caixa_inicial' not in st.session_state: st.session_state.caixa_inicial = 0.0
 if 'fichas_pendentes' not in st.session_state: st.session_state.fichas_pendentes = []
+if 'desconto' not in st.session_state: st.session_state.desconto = 0.0
 if 'show_dinheiro' not in st.session_state: st.session_state.show_dinheiro = False
 if 'show_vip' not in st.session_state: st.session_state.show_vip = False
 
@@ -165,7 +166,16 @@ with t1:
                         st.rerun()
             
             st.divider()
-            st.markdown(f"## TOTAL: R$ {total_v:.2f}")
+            
+            # Campo de Desconto
+            with st.expander("🏷️ Aplicar Desconto"):
+                desc_val = st.number_input("Valor do Desconto (R$):", min_value=0.0, max_value=total_v, value=st.session_state.desconto, step=0.5)
+                st.session_state.desconto = desc_val
+
+            total_final = max(0.0, total_v - st.session_state.desconto)
+            st.markdown(f"## TOTAL: R$ {total_final:.2f}")
+            if st.session_state.desconto > 0:
+                st.caption(f"*(Desconto de R$ {st.session_state.desconto:.2f} aplicado)*")
             
             # Pagamentos
             metodo = None
@@ -180,9 +190,9 @@ with t1:
             if p6.button("CORTESIA", type="secondary"): metodo = "Cortesia"
 
             if st.session_state.show_dinheiro:
-                v_r = st.number_input("Valor Recebido:", min_value=total_v, step=1.0)
+                v_r = st.number_input("Valor Recebido:", min_value=total_final, step=1.0)
                 if st.button("CONFIRMAR DINHEIRO", type="primary"):
-                    st.success(f"Troco: R$ {v_r - total_v:.2f}")
+                    st.success(f"Troco: R$ {v_r - total_final:.2f}")
                     metodo = "Dinheiro"; st.session_state.show_dinheiro = False
 
             if st.session_state.show_vip:
@@ -190,19 +200,33 @@ with t1:
                 if st.button("LANÇAR NO VIP", type="primary"):
                     if n_v: 
                         metodo = f"VIP"
-                        st.session_state.contas_vip[n_v] = st.session_state.contas_vip.get(n_v, 0.0) + total_v
+                        st.session_state.contas_vip[n_v] = st.session_state.contas_vip.get(n_v, 0.0) + total_final
                         st.session_state.show_vip = False
                         st.session_state.vip_atual = n_v
                     else: st.error("Insira o nome")
 
             if metodo:
                 v_id = int(datetime.now().timestamp())
+                
+                # Registrar o desconto como uma linha negativa se houver
+                if st.session_state.desconto > 0 and metodo != "Cortesia":
+                    st.session_state.vendas.append({
+                        "id": v_id, 
+                        "sabor": "DESCONTO APLICADO", 
+                        "valor": -st.session_state.desconto, 
+                        "tipo": metodo, 
+                        "hora": datetime.now().strftime("%H:%M"), 
+                        "vip": st.session_state.get('vip_atual', '')
+                    })
+
                 for sab, info in st.session_state.carrinho.items():
                     for _ in range(info['qtd']):
                         v_data = {"id": v_id, "sabor": sab, "valor": info['preco'] if metodo != "Cortesia" else 0, "tipo": metodo, "hora": datetime.now().strftime("%H:%M"), "vip": st.session_state.get('vip_atual', '')}
                         st.session_state.vendas.append(v_data)
                         st.session_state.fichas_pendentes.append({"img": gerar_ficha_imagem(sab, v_id, metodo), "sabor": sab})
+                
                 st.session_state.carrinho = {}
+                st.session_state.desconto = 0.0
                 st.session_state.vip_atual = ''
                 salvar_dados()
                 st.rerun()
