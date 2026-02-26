@@ -1,0 +1,5 @@
+{
+  "name": "Seven Dwarfs POS",
+  "description": "Sistema de PDV completo para o evento Seven Dwarfs, com gestão de vendas, contas VIP, estornos e relatórios financeiros.",
+  "requestFramePermissions": []
+}
