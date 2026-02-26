@@ -1,414 +1,267 @@
 import streamlit as st
-import sqlite3
 import pandas as pd
-import json
 from datetime import datetime
-import plotly.express as px
 from PIL import Image, ImageDraw, ImageFont
-import io
 import os
+import textwrap
+import io
 
 # --- CONFIGURAÇÃO DA PÁGINA ---
-st.set_page_config(
-    page_title="Seven Dwarfs PDV",
-    page_icon="🍺",
-    layout="wide",
-    initial_sidebar_state="collapsed"
-)
+st.set_page_config(page_title="Seven Dwarfs PDV", layout="wide", page_icon="🍺")
 
-# --- ESTILIZAÇÃO CUSTOMIZADA (Tailwind-like) ---
+# --- ESTILIZAÇÃO CUSTOMIZADA ---
 st.markdown("""
     <style>
-    .main { background-color: #F5F5F5; }
     .stButton>button {
         width: 100%;
-        border-radius: 15px;
-        height: 3em;
-        background-color: white;
-        color: black;
-        border: 1px solid #E0E0E0;
+        border-radius: 12px;
+        height: 3.5em;
         font-weight: bold;
+        transition: all 0.2s;
     }
     .stButton>button:hover {
-        border-color: black;
-        background-color: #F9F9F9;
+        border-color: #000;
+        transform: translateY(-2px);
     }
-    .payment-btn>div>button {
-        background-color: #000 !important;
-        color: #fff !important;
-        border-radius: 20px !important;
-    }
-    .card {
-        background-color: white;
-        padding: 20px;
-        border-radius: 25px;
-        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-        border: 1px solid rgba(0,0,0,0.05);
-        margin-bottom: 20px;
-    }
-    .stat-card {
-        text-align: center;
-        padding: 15px;
-        background: white;
-        border-radius: 20px;
-        border: 1px solid #EEE;
+    div[data-testid="stMetricValue"] { font-family: 'Courier New', monospace; }
+    .vip-card {
+        padding: 10px;
+        background-color: #f0f2f6;
+        border-radius: 10px;
+        margin-bottom: 5px;
     }
     </style>
 """, unsafe_allow_html=True)
 
-# --- BANCO DE DADOS ---
-def init_db():
-    conn = sqlite3.connect('database.db', check_same_thread=False)
-    cursor = conn.cursor()
-    
-    # Tabela de Configuração
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS config (
-            id INTEGER PRIMARY KEY CHECK (id = 1),
-            troco_inicial REAL DEFAULT 0,
-            sabores_fixos TEXT DEFAULT '[]',
-            sabores_sazonais TEXT DEFAULT '[]'
-        )
-    ''')
-    
-    # Tabela de Vendas
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS vendas (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            data_hora TEXT DEFAULT CURRENT_TIMESTAMP,
-            itens TEXT,
-            total REAL,
-            metodo_pagamento TEXT,
-            troco REAL,
-            status TEXT DEFAULT 'pago',
-            vip_nome TEXT
-        )
-    ''')
-    
-    # Tabela de VIPs
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS vips (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            nome TEXT UNIQUE,
-            total_acumulado REAL DEFAULT 0
-        )
-    ''')
-    
-    # Inserir config inicial se não existir
-    cursor.execute("SELECT COUNT(*) FROM config")
-    if cursor.fetchone()[0] == 0:
-        default_fixos = json.dumps([
-            {"nome": "Pilsen", "preco": 10.0},
-            {"nome": "IPA", "preco": 10.0},
-            {"nome": "Black Jack", "preco": 10.0},
-            {"nome": "Vinho", "preco": 10.0},
-            {"nome": "Manga", "preco": 10.0},
-            {"nome": "Morango", "preco": 10.0}
-        ])
-        cursor.execute("INSERT INTO config (id, troco_inicial, sabores_fixos, sabores_sazonais) VALUES (1, 0, ?, '[]')", (default_fixos,))
-    
-    conn.commit()
-    return conn
+# --- 1. INICIALIZAÇÃO DE ESTADOS ---
+if 'vendas' not in st.session_state: st.session_state.vendas = []
+if 'contas_vip' not in st.session_state: st.session_state.contas_vip = {}
+if 'carrinho' not in st.session_state: st.session_state.carrinho = {}
+if 'cardapio' not in st.session_state: st.session_state.cardapio = {}
+if 'configurado' not in st.session_state: st.session_state.configurado = False
+if 'caixa_inicial' not in st.session_state: st.session_state.caixa_inicial = 0.0
+if 'fichas_pendentes' not in st.session_state: st.session_state.fichas_pendentes = []
+if 'show_dinheiro' not in st.session_state: st.session_state.show_dinheiro = False
+if 'show_vip' not in st.session_state: st.session_state.show_vip = False
 
-conn = init_db()
-
-# --- FUNÇÕES DE HELPER ---
-def get_config():
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM config WHERE id = 1")
-    row = cursor.fetchone()
-    return {
-        "troco_inicial": row[1],
-        "sabores_fixos": json.loads(row[2]),
-        "sabores_sazonais": json.loads(row[3])
-    }
-
-def save_config(troco, fixos, sazonais):
-    cursor = conn.cursor()
-    cursor.execute(
-        "UPDATE config SET troco_inicial = ?, sabores_fixos = ?, sabores_sazonais = ? WHERE id = 1",
-        (troco, json.dumps(fixos), json.dumps(sazonais))
-    )
-    conn.commit()
-
-def add_venda(itens, total, metodo, troco=0, status='pago', vip_nome=None):
-    cursor = conn.cursor()
-    cursor.execute(
-        "INSERT INTO vendas (itens, total, metodo_pagamento, troco, status, vip_nome) VALUES (?, ?, ?, ?, ?, ?)",
-        (json.dumps(itens), total, metodo, troco, status, vip_nome)
-    )
-    venda_id = cursor.lastrowid
-    
-    if metodo == "VIP" and vip_nome:
-        cursor.execute("SELECT id FROM vips WHERE nome = ?", (vip_nome,))
-        vip = cursor.fetchone()
-        if vip:
-            cursor.execute("UPDATE vips SET total_acumulado = total_acumulado + ? WHERE id = ?", (total, vip[0]))
-        else:
-            cursor.execute("INSERT INTO vips (nome, total_acumulado) VALUES (?, ?)", (vip_nome, total))
-    
-    conn.commit()
-    update_backups()
-    return venda_id
-
-def update_backups():
-    vendas_df = pd.read_sql_query("SELECT * FROM vendas", conn)
-    vips_df = pd.read_sql_query("SELECT * FROM vips", conn)
-    vendas_df.to_csv("vendas_backup.csv", index=False)
-    vips_df.to_csv("vips_backup.csv", index=False)
-
-def generate_ticket(venda_id, flavor):
-    img = Image.new('RGB', (300, 400), color='white')
-    d = ImageDraw.Draw(img)
-    
-    # Tentar carregar uma fonte, senão usa a padrão
+# --- 2. PERSISTÊNCIA ---
+def salvar_dados():
     try:
-        font_title = ImageFont.truetype("Arial.ttf", 24)
-        font_flavor = ImageFont.truetype("Arial.ttf", 40)
-        font_small = ImageFont.truetype("Arial.ttf", 12)
-    except:
-        font_title = ImageFont.load_default()
-        font_flavor = ImageFont.load_default()
-        font_small = ImageFont.load_default()
+        if st.session_state.vendas:
+            pd.DataFrame(st.session_state.vendas).to_csv("vendas_backup.csv", index=False)
+        if st.session_state.contas_vip:
+            vips_lista = [{"nome": k, "valor": v} for k, v in st.session_state.contas_vip.items()]
+            pd.DataFrame(vips_lista).to_csv("vips_backup.csv", index=False)
+    except: pass
 
-    d.rectangle([10, 10, 290, 390], outline="black", width=2)
-    d.text((150, 50), "SEVEN DWARFS", fill="black", anchor="ms", font=font_title)
-    d.line([50, 70, 250, 70], fill="black", width=1)
+def carregar_dados():
+    if os.path.exists("vendas_backup.csv"):
+        try: st.session_state.vendas = pd.read_csv("vendas_backup.csv").to_dict('records')
+        except: pass
+    if os.path.exists("vips_backup.csv"):
+        try:
+            vips = pd.read_csv("vips_backup.csv")
+            st.session_state.contas_vip = dict(zip(vips.nome, vips.valor))
+        except: pass
+
+if not st.session_state.vendas and not st.session_state.contas_vip:
+    carregar_dados()
+
+# --- 3. GERAÇÃO DE FICHA ---
+def gerar_ficha_imagem(sabor, id_venda, pagto):
+    img = Image.new('RGB', (300, 450), color='white')
+    draw = ImageDraw.Draw(img)
+    try: font_b = ImageFont.load_default() # Em prod, use caminhos de fontes .ttf
+    except: font_b = ImageFont.load_default()
+
+    draw.rectangle([5, 5, 295, 445], outline="black", width=3)
+    draw.text((150, 40), "SEVEN DWARFS", fill="black", anchor="mm")
+    draw.line([50, 60, 250, 60], fill="black", width=2)
     
-    d.text((150, 180), flavor.upper(), fill="black", anchor="ms", font=font_flavor)
-    d.text((150, 230), f"VENDA #{venda_id}", fill="black", anchor="ms")
+    draw.text((150, 180), str(sabor).upper(), fill="black", anchor="mm")
+    draw.text((150, 230), f"ID: {str(id_venda)[-6:]}", fill="black", anchor="mm")
+    draw.text((150, 260), f"PAGTO: {str(pagto).upper()}", fill="black", anchor="mm")
     
-    footer_y = 330
-    d.text((150, footer_y), "ESTA FICHA É VALIDA APENAS", fill="black", anchor="ms", font=font_small)
-    d.text((150, footer_y+20), "PARA O DIA DO EVENTO.", fill="black", anchor="ms", font=font_small)
-    d.text((150, footer_y+40), "NÃO HÁ REEMBOLSO APÓS EMISSÃO.", fill="black", anchor="ms", font=font_small)
+    footer = ["VALIDO APENAS NA DATA DE EMISSAO", "DURANTE A DURACAO DO EVENTO", "NÃO HÁ REEMBOLSO APÓS EMISSÃO"]
+    y = 350
+    for line in footer:
+        draw.text((150, y), line, fill="black", anchor="mm")
+        y += 20
     
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     return buf.getvalue()
 
-# --- ESTADO DA SESSÃO ---
-if 'cart' not in st.session_state:
-    st.session_state.cart = []
-if 'last_venda' not in st.session_state:
-    st.session_state.last_venda = None
-
-# --- UI PRINCIPAL ---
-st.title("🍺 Seven Dwarfs PDV")
-
-tabs = st.tabs(["🛒 Vendas", "⚙️ Configuração", "🔍 Estorno", "📊 Fechamento", "💾 Backup"])
-
-# --- TAB: VENDAS ---
-with tabs[0]:
-    config = get_config()
-    col_menu, col_cart = st.columns([2, 1])
-    
-    with col_menu:
-        st.subheader("Sabores Disponíveis")
-        all_flavors = config["sabores_fixos"] + config["sabores_sazonais"]
-        
-        # Grid de botões
-        cols = st.columns(3)
-        for idx, flavor in enumerate(all_flavors):
-            with cols[idx % 3]:
-                if st.button(f"{flavor['nome']}\nR$ {flavor['preco']:.2f}", key=f"btn_{flavor['nome']}"):
-                    # Adicionar ao carrinho
-                    found = False
-                    for item in st.session_state.cart:
-                        if item['nome'] == flavor['nome']:
-                            item['quantidade'] += 1
-                            found = True
-                            break
-                    if not found:
-                        st.session_state.cart.append({"nome": flavor['nome'], "preco": flavor['preco'], "quantidade": 1})
-                    st.rerun()
-
-        st.divider()
-        st.subheader("Contas VIP Abertas")
-        vips_df = pd.read_sql_query("SELECT * FROM vips WHERE total_acumulado > 0", conn)
-        if not vips_df.empty:
-            for _, vip in vips_df.iterrows():
-                if st.button(f"👤 {vip['nome']} - R$ {vip['total_acumulado']:.2f}", key=f"vip_list_{vip['id']}"):
-                    st.session_state.settle_vip = vip.to_dict()
-        else:
-            st.info("Nenhuma conta VIP com saldo.")
-
-    with col_cart:
-        st.subheader("Carrinho")
-        total_cart = 0
-        if not st.session_state.cart:
-            st.write("Carrinho vazio")
-        else:
-            for i, item in enumerate(st.session_state.cart):
-                c1, c2, c3 = st.columns([3, 1, 1])
-                c1.write(f"**{item['nome']}**")
-                c2.write(f"x{item['quantidade']}")
-                total_cart += item['preco'] * item['quantidade']
-                if c3.button("🗑️", key=f"del_{i}"):
-                    st.session_state.cart.pop(i)
-                    st.rerun()
-            
-            st.divider()
-            st.metric("Total", f"R$ {total_cart:.2f}")
-            
-            # Métodos de Pagamento
-            metodo = st.selectbox("Forma de Pagamento", ["PIX", "Débito", "Crédito", "Dinheiro", "VIP", "Cortesia"])
-            
-            extra_info = None
-            if metodo == "Dinheiro":
-                valor_pago = st.number_input("Valor Pago", min_value=total_cart, step=1.0)
-                st.write(f"**Troco: R$ {valor_pago - total_cart:.2f}**")
-                extra_info = valor_pago - total_cart
-            elif metodo == "VIP":
-                extra_info = st.text_input("Nome do VIP")
-            
-            if st.button("Finalizar Venda", type="primary", use_container_width=True):
-                if metodo == "VIP" and not extra_info:
-                    st.error("Informe o nome do VIP")
-                else:
-                    v_id = add_venda(st.session_state.cart, total_cart if metodo != "Cortesia" else 0, metodo, troco=extra_info if metodo == "Dinheiro" else 0, vip_nome=extra_info if metodo == "VIP" else None)
-                    st.session_state.last_venda = {"id": v_id, "flavor": st.session_state.cart[-1]['nome']}
-                    st.session_state.cart = []
-                    st.success("Venda realizada!")
-                    st.rerun()
-
-    # Modal de Ticket (Simulado)
-    if st.session_state.last_venda:
-        st.divider()
-        st.info(f"Venda #{st.session_state.last_venda['id']} finalizada!")
-        ticket_img = generate_ticket(st.session_state.last_venda['id'], st.session_state.last_venda['flavor'])
-        st.download_button("📥 Baixar Ficha (PNG)", ticket_img, file_name=f"ficha_{st.session_state.last_venda['id']}.png", mime="image/png")
-        if st.button("Fechar Ticket"):
-            st.session_state.last_venda = None
-            st.rerun()
-
-    # Modal de Acerto VIP
-    if 'settle_vip' in st.session_state:
-        st.divider()
-        st.warning(f"Acertando conta de: {st.session_state.settle_vip['nome']}")
-        st.write(f"Total a pagar: R$ {st.session_state.settle_vip['total_acumulado']:.2f}")
-        m_acerto = st.radio("Método de Acerto", ["PIX", "Débito", "Crédito", "Dinheiro"], horizontal=True)
-        if st.button("Confirmar Recebimento"):
-            add_venda([{"nome": f"Acerto VIP: {st.session_state.settle_vip['nome']}", "preco": st.session_state.settle_vip['total_acumulado'], "quantidade": 1}], st.session_state.settle_vip['total_acumulado'], m_acerto)
-            cursor = conn.cursor()
-            cursor.execute("UPDATE vips SET total_acumulado = 0 WHERE id = ?", (st.session_state.settle_vip['id'],))
-            conn.commit()
-            del st.session_state.settle_vip
-            st.success("Conta VIP quitada!")
-            st.rerun()
-
-# --- TAB: CONFIGURAÇÃO ---
-with tabs[1]:
-    st.header("Configurações do Evento")
-    current_config = get_config()
-    
-    troco_in = st.number_input("Troco Inicial em Dinheiro (R$)", value=current_config["troco_inicial"])
-    
-    st.subheader("Sabores Fixos (Selecione os ativos)")
-    opcoes_fixas = ["Pilsen", "IPA", "Black Jack", "Vinho", "Manga", "Morango"]
-    selecionados = []
-    
-    for s in opcoes_fixas:
-        existente = next((f for f in current_config["sabores_fixos"] if f["nome"] == s), None)
-        col1, col2 = st.columns([1, 3])
-        ativo = col1.checkbox(s, value=existente is not None, key=f"chk_{s}")
-        preco = col2.number_input(f"Preço {s}", value=existente["preco"] if existente else 10.0, key=f"prc_{s}")
-        if ativo:
-            selecionados.append({"nome": s, "preco": preco})
-            
-    st.divider()
-    st.subheader("Sabores Sazonais")
-    sazonais_raw = st.text_area("Nomes (separados por vírgula)", value=", ".join([f["nome"] for f in current_config["sabores_sazonais"]]))
-    
-    sazonais_list = []
-    if sazonais_raw:
-        nomes = [n.strip() for n in sazonais_raw.split(",") if n.strip()]
-        for n in nomes:
-            existente = next((f for f in current_config["sabores_sazonais"] if f["nome"] == n), None)
-            p = st.number_input(f"Preço {n}", value=existente["preco"] if existente else 10.0, key=f"saz_{n}")
-            sazonais_list.append({"nome": n, "preco": p})
-            
-    if st.button("Salvar Configurações", type="primary"):
-        save_config(troco_in, selecionados, sazonais_list)
-        st.success("Configurações salvas!")
-
-# --- TAB: ESTORNO ---
-with tabs[2]:
-    st.header("Estorno de Vendas")
-    v_id_search = st.text_input("ID da Venda")
-    if v_id_search:
-        venda_res = pd.read_sql_query(f"SELECT * FROM vendas WHERE id = {v_id_search}", conn)
-        if not venda_res.empty:
-            st.write(venda_res)
-            if st.button("Confirmar Estorno Total", type="primary"):
-                cursor = conn.cursor()
-                # Se for VIP, subtrair do saldo
-                v_data = venda_res.iloc[0]
-                if v_data['metodo_pagamento'] == "VIP" and v_data['vip_nome']:
-                    cursor.execute("UPDATE vips SET total_acumulado = total_acumulado - ? WHERE nome = ?", (v_data['total'], v_data['vip_nome']))
-                
-                cursor.execute("DELETE FROM vendas WHERE id = ?", (v_id_search,))
-                conn.commit()
-                st.success("Venda estornada com sucesso!")
-                update_backups()
-        else:
-            st.error("Venda não encontrada.")
-
-# --- TAB: FECHAMENTO ---
-with tabs[3]:
-    st.header("Relatório de Fechamento")
-    vendas_df = pd.read_sql_query("SELECT * FROM vendas", conn)
-    config = get_config()
-    
-    if not vendas_df.empty:
-        total_vendas = vendas_df['total'].sum()
-        col1, col2, col3 = st.columns(3)
-        col1.metric("Faturamento Total", f"R$ {total_vendas:.2f}")
-        col2.metric("Troco Inicial", f"R$ {config['troco_inicial']:.2f}")
-        col3.metric("Total em Gaveta", f"R$ {total_vendas + config['troco_inicial']:.2f}")
-        
-        # Gráfico por Sabor
-        itens_list = []
-        for _, row in vendas_df.iterrows():
-            itens_list.extend(json.loads(row['itens']))
-        
-        df_itens = pd.DataFrame(itens_list)
-        df_resumo = df_itens.groupby('nome')['quantidade'].sum().reset_index()
-        
-        fig_sabor = px.bar(df_resumo, x='nome', y='quantidade', title="Vendas por Sabor", color='quantidade')
-        st.plotly_chart(fig_sabor, use_container_width=True)
-        
-        # Gráfico por Hora
-        vendas_df['hora'] = pd.to_datetime(vendas_df['data_hora']).dt.hour
-        df_hora = vendas_df.groupby('hora')['total'].sum().reset_index()
-        fig_hora = px.line(df_hora, x='hora', y='total', title="Faturamento por Hora", markers=True)
-        st.plotly_chart(fig_hora, use_container_width=True)
-        
-        st.subheader("Detalhes das Vendas")
-        st.dataframe(vendas_df, use_container_width=True)
-    else:
-        st.info("Nenhuma venda registrada ainda.")
-
-# --- TAB: BACKUP ---
-with tabs[4]:
-    st.header("Gerenciamento de Dados")
+# --- 4. CONFIGURAÇÃO ---
+if not st.session_state.configurado:
+    st.title("⚙️ Configuração do Evento")
+    v_ini = st.number_input("Troco Inicial em Dinheiro (R$):", min_value=0.0, value=st.session_state.caixa_inicial)
     
     c1, c2 = st.columns(2)
-    with open("vendas_backup.csv", "rb") as f:
-        c1.download_button("📥 Baixar Backup Vendas (CSV)", f, "vendas.csv", "text/csv")
+    with c1:
+        fixos = st.multiselect("Selecione os Sabores Fixos:", ["Pilsen", "IPA", "Black Jack", "Vinho", "Manga", "Morango"], default=["Pilsen", "IPA"])
+    with c2:
+        extras = st.text_area("Sabores Sazonais (separados por vírgula):", placeholder="Ex: Porter, Weiss")
     
-    if os.path.exists("vips_backup.csv"):
-        with open("vips_backup.csv", "rb") as f:
-            c2.download_button("📥 Baixar Backup VIPs (CSV)", f, "vips.csv", "text/csv")
+    lista_itens = list(dict.fromkeys(fixos + [s.strip() for s in extras.split(",") if s.strip()]))
+    
+    if lista_itens:
+        st.subheader("Ajuste os Preços")
+        cp = st.columns(3)
+        temp_card = {}
+        for i, item in enumerate(lista_itens):
+            p_ex = st.session_state.cardapio.get(item, 10.0)
+            temp_card[item] = cp[i%3].number_input(f"R$ {item}:", min_value=0.0, value=float(p_ex), key=f"cfg_{item}")
+        
+        if st.button("ABRIR CAIXA E INICIAR EVENTO", type="primary", use_container_width=True):
+            st.session_state.cardapio = temp_card
+            st.session_state.caixa_inicial = v_ini
+            st.session_state.configurado = True
+            st.rerun()
+    st.stop()
+
+# --- 5. INTERFACE PRINCIPAL ---
+t1, t2, t3 = st.tabs(["🛒 VENDAS", "🔄 ESTORNO", "📊 FECHAMENTO"])
+
+with t1:
+    col_menu, col_carrinho = st.columns([1.6, 1])
+    
+    with col_menu:
+        st.subheader("Cardápio")
+        c_btns = st.columns(2)
+        for i, (nome, preco) in enumerate(st.session_state.cardapio.items()):
+            if c_btns[i%2].button(f"{nome}\nR$ {preco:.2f}", key=f"btn_{nome}"):
+                if nome in st.session_state.carrinho: st.session_state.carrinho[nome]['qtd'] += 1
+                else: st.session_state.carrinho[nome] = {'preco': preco, 'qtd': 1}
+                st.rerun()
+        
+        if st.session_state.contas_vip:
+            st.divider()
+            st.subheader("Contas VIP Abertas (Clique para Acertar)")
+            for nv, tv in st.session_state.contas_vip.items():
+                if tv > 0:
+                    if st.button(f"👤 {nv}: R$ {tv:.2f}", key=f"settle_{nv}"):
+                        st.session_state.vip_acerto = {"nome": nv, "valor": tv}
+
+    with col_carrinho:
+        st.subheader("Carrinho")
+        total_v = 0.0
+        if not st.session_state.carrinho:
+            st.info("Carrinho vazio")
+        else:
+            for n, it in list(st.session_state.carrinho.items()):
+                total_v += it['preco'] * it['qtd']
+                with st.container(border=True):
+                    c_n, c_q = st.columns([2, 1])
+                    c_n.write(f"**{n}**\nR$ {it['preco']:.2f}")
+                    cq1, cq2, cq3 = c_q.columns(3)
+                    if cq1.button("-", key=f"m_{n}"):
+                        st.session_state.carrinho[n]['qtd'] -= 1
+                        if st.session_state.carrinho[n]['qtd'] <= 0: del st.session_state.carrinho[n]
+                        st.rerun()
+                    cq2.write(f"{it['qtd']}")
+                    if cq3.button("+", key=f"p_{n}"):
+                        st.session_state.carrinho[n]['qtd'] += 1
+                        st.rerun()
             
-    st.divider()
-    st.subheader("⚠️ Zona de Perigo")
-    if st.button("ZERAR SISTEMA (CUIDADO)", type="secondary"):
-        if st.checkbox("Eu entendo que isso apagará TODOS os dados permanentemente"):
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM vendas")
-            cursor.execute("DELETE FROM vips")
-            cursor.execute("UPDATE config SET troco_inicial = 0, sabores_fixos = '[]', sabores_sazonais = '[]' WHERE id = 1")
-            conn.commit()
-            st.warning("Sistema zerado. Recarregue a página.")
-            update_backups()
+            st.divider()
+            st.markdown(f"## TOTAL: R$ {total_v:.2f}")
+            
+            # Pagamentos
+            metodo = None
+            p1, p2, p3 = st.columns(3)
+            if p1.button("PIX"): metodo = "PIX"
+            if p2.button("DÉBITO"): metodo = "Débito"
+            if p3.button("CRÉDITO"): metodo = "Crédito"
+            
+            p4, p5, p6 = st.columns(3)
+            if p4.button("DINHEIRO"): st.session_state.show_dinheiro = not st.session_state.show_dinheiro
+            if p5.button("VIP"): st.session_state.show_vip = not st.session_state.show_vip
+            if p6.button("CORTESIA", type="secondary"): metodo = "Cortesia"
+
+            if st.session_state.show_dinheiro:
+                v_r = st.number_input("Valor Recebido:", min_value=total_v, step=1.0)
+                if st.button("CONFIRMAR DINHEIRO", type="primary"):
+                    st.success(f"Troco: R$ {v_r - total_v:.2f}")
+                    metodo = "Dinheiro"; st.session_state.show_dinheiro = False
+
+            if st.session_state.show_vip:
+                n_v = st.text_input("Nome do Cliente VIP:")
+                if st.button("LANÇAR NO VIP", type="primary"):
+                    if n_v: 
+                        metodo = f"VIP"
+                        st.session_state.contas_vip[n_v] = st.session_state.contas_vip.get(n_v, 0.0) + total_v
+                        st.session_state.show_vip = False
+                        st.session_state.vip_atual = n_v
+                    else: st.error("Insira o nome")
+
+            if metodo:
+                v_id = int(datetime.now().timestamp())
+                for sab, info in st.session_state.carrinho.items():
+                    for _ in range(info['qtd']):
+                        v_data = {"id": v_id, "sabor": sab, "valor": info['preco'] if metodo != "Cortesia" else 0, "tipo": metodo, "hora": datetime.now().strftime("%H:%M"), "vip": st.session_state.get('vip_atual', '')}
+                        st.session_state.vendas.append(v_data)
+                        st.session_state.fichas_pendentes.append({"img": gerar_ficha_imagem(sab, v_id, metodo), "sabor": sab})
+                st.session_state.carrinho = {}
+                st.session_state.vip_atual = ''
+                salvar_dados()
+                st.rerun()
+
+    # Acerto de Conta VIP
+    if 'vip_acerto' in st.session_state:
+        st.divider()
+        st.warning(f"Acertando conta de: **{st.session_state.vip_acerto['nome']}**")
+        st.write(f"Valor Total: R$ {st.session_state.vip_acerto['valor']:.2f}")
+        m_ac = st.selectbox("Método de Pagamento do Acerto", ["PIX", "Débito", "Crédito", "Dinheiro"])
+        if st.button("FINALIZAR ACERTO VIP"):
+            v_id = int(datetime.now().timestamp())
+            st.session_state.vendas.append({"id": v_id, "sabor": f"ACERTO VIP: {st.session_state.vip_acerto['nome']}", "valor": st.session_state.vip_acerto['valor'], "tipo": m_ac, "hora": datetime.now().strftime("%H:%M")})
+            st.session_state.contas_vip[st.session_state.vip_acerto['nome']] = 0
+            salvar_dados()
+            del st.session_state.vip_acerto
+            st.success("Conta quitada!")
+            st.rerun()
+
+    # Emissão de Fichas
+    if st.session_state.fichas_pendentes:
+        st.divider()
+        st.subheader("Fichas Geradas")
+        for idx, f in enumerate(st.session_state.fichas_pendentes):
+            st.image(f['img'], width=150)
+            st.download_button(f"Baixar Ficha {f['sabor']}", f['img'], file_name=f"ficha_{idx}.png", mime="image/png")
+        if st.button("Limpar Fichas da Tela"): 
+            st.session_state.fichas_pendentes = []
+            st.rerun()
+
+# --- 6. ESTORNO ---
+with t2:
+    st.subheader("Estorno de Vendas")
+    busca = st.text_input("Digite o ID da Venda:")
+    if st.session_state.vendas:
+        df_v = pd.DataFrame(st.session_state.vendas)
+        if busca:
+            res = df_v[df_v['id'].astype(str).str.contains(busca)]
+            for i, r in res.iterrows():
+                if st.button(f"Estornar {r['sabor']} (R$ {r['valor']})", key=f"est_{i}"):
+                    st.session_state.vendas.remove(r.to_dict())
+                    salvar_dados(); st.rerun()
+
+# --- 7. FECHAMENTO ---
+with t3:
+    if st.session_state.vendas:
+        df_f = pd.DataFrame(st.session_state.vendas)
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Faturamento Total", f"R$ {df_f['valor'].sum():.2f}")
+        c2.metric("Total em Dinheiro", f"R$ {df_f[df_f['tipo']=='Dinheiro']['valor'].sum():.2f}")
+        c3.metric("Gaveta (Dinheiro + Troco)", f"R$ {df_f[df_f['tipo']=='Dinheiro']['valor'].sum() + st.session_state.caixa_inicial:.2f}")
+        
+        st.divider()
+        st.subheader("Vendas por Sabor")
+        st.bar_chart(df_f['sabor'].value_counts())
+        
+        if st.button("ZERAR TUDO PARA NOVO EVENTO"):
+            if os.path.exists("vendas_backup.csv"): os.remove("vendas_backup.csv")
+            if os.path.exists("vips_backup.csv"): os.remove("vips_backup.csv")
+            st.session_state.clear()
+            st.rerun()
+    else: st.info("Sem vendas registradas.")
