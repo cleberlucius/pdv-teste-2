@@ -93,6 +93,7 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [searchId, setSearchId] = useState("");
   const [paymentModal, setPaymentModal] = useState<{ open: boolean; method?: string; value?: number; change?: number; vipName?: string }>({ open: false });
+  const [vipSettlementModal, setVipSettlementModal] = useState<{ open: boolean; vip?: VIP; method?: string }>({ open: false });
   const [ticketData, setTicketData] = useState<{ id: number; flavor: string } | null>(null);
 
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -195,7 +196,7 @@ export default function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           itens: cart,
-          total: totalCart,
+          total: method === "Cortesia" ? 0 : totalCart,
           metodo_pagamento: method,
           troco: change,
           vip_nome: extra.vipName
@@ -214,6 +215,24 @@ export default function App() {
       }
     } catch (error) {
       console.error("Error finalizing sale:", error);
+    }
+  };
+
+  const settleVipAccount = async (vipId: number, method: string, total: number) => {
+    try {
+      const res = await fetch("/api/vips/pagar", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ id: vipId, metodo_pagamento: method, total })
+      });
+      const data = await res.json();
+      if (data.success) {
+        setVipSettlementModal({ open: false });
+        fetchInitialData();
+        alert("Conta VIP acertada com sucesso!");
+      }
+    } catch (error) {
+      console.error("Error settling VIP account:", error);
     }
   };
 
@@ -544,14 +563,18 @@ export default function App() {
 
                 <div className="bg-white p-6 rounded-3xl shadow-sm border border-black/5 h-48 overflow-y-auto">
                   <h2 className="text-sm font-bold text-black/40 uppercase tracking-widest mb-4 flex items-center gap-2">
-                    <User size={14} /> Contas VIP Abertas
+                    <User size={14} /> Contas VIP Abertas (Clique para Acertar)
                   </h2>
                   <div className="flex flex-wrap gap-2">
                     {vips.length > 0 ? vips.map(vip => (
-                      <div key={vip.id} className="px-4 py-2 bg-black/5 rounded-full flex items-center gap-3">
+                      <button 
+                        key={vip.id} 
+                        onClick={() => setVipSettlementModal({ open: true, vip })}
+                        className="px-4 py-2 bg-black/5 rounded-full flex items-center gap-3 hover:bg-black hover:text-white transition-all group"
+                      >
                         <span className="font-medium">{vip.nome}</span>
-                        <span className="text-xs font-mono text-black/40">R$ {vip.total_acumulado.toFixed(2)}</span>
-                      </div>
+                        <span className="text-xs font-mono text-black/40 group-hover:text-white/60">R$ {vip.total_acumulado.toFixed(2)}</span>
+                      </button>
                     )) : <p className="text-black/30 text-sm italic">Nenhuma conta VIP registrada.</p>}
                   </div>
                 </div>
@@ -611,10 +634,17 @@ export default function App() {
                     </button>
                     <button 
                       disabled={cart.length === 0}
-                      onClick={() => setPaymentModal({ open: true, method: "Cartão" })}
+                      onClick={() => setPaymentModal({ open: true, method: "Débito" })}
                       className="flex items-center justify-center gap-2 py-3 bg-white/10 rounded-xl hover:bg-white/20 transition-all disabled:opacity-50"
                     >
-                      <CreditCard size={18} /> Cartão
+                      <CreditCard size={18} /> Débito
+                    </button>
+                    <button 
+                      disabled={cart.length === 0}
+                      onClick={() => setPaymentModal({ open: true, method: "Crédito" })}
+                      className="flex items-center justify-center gap-2 py-3 bg-white/10 rounded-xl hover:bg-white/20 transition-all disabled:opacity-50"
+                    >
+                      <CreditCard size={18} /> Crédito
                     </button>
                     <button 
                       disabled={cart.length === 0}
@@ -630,14 +660,14 @@ export default function App() {
                     >
                       <User size={18} /> VIP
                     </button>
+                    <button 
+                      disabled={cart.length === 0}
+                      onClick={() => finalizeSale("Cortesia")}
+                      className="flex items-center justify-center gap-2 py-3 bg-emerald-500 text-white rounded-xl hover:bg-emerald-600 transition-all disabled:opacity-50"
+                    >
+                      <CheckCircle2 size={18} /> Cortesia
+                    </button>
                   </div>
-                  <button 
-                    disabled={cart.length === 0}
-                    onClick={() => finalizeSale("Cortesia")}
-                    className="w-full mt-3 py-3 bg-emerald-500 text-white rounded-xl font-bold hover:bg-emerald-600 transition-all disabled:opacity-50"
-                  >
-                    Cortesia
-                  </button>
                 </div>
               </div>
             </motion.div>
@@ -898,6 +928,67 @@ export default function App() {
                   className="w-full mt-8 py-4 bg-black text-white rounded-2xl font-bold hover:bg-black/90 transition-all disabled:opacity-30 flex items-center justify-center gap-2"
                 >
                   <CheckCircle2 size={20} /> Confirmar Pagamento
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* VIP Settlement Modal */}
+      <AnimatePresence>
+        {vipSettlementModal.open && vipSettlementModal.vip && (
+          <div className="fixed inset-0 z-[100] flex items-center justify-center p-6">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => setVipSettlementModal({ open: false })}
+              className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.9, y: 20 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.9, y: 20 }}
+              className="relative bg-white w-full max-w-md rounded-[2.5rem] shadow-2xl overflow-hidden"
+            >
+              <div className="p-8">
+                <div className="flex justify-between items-center mb-8">
+                  <h3 className="text-2xl font-bold">Acerto VIP: {vipSettlementModal.vip.nome}</h3>
+                  <button onClick={() => setVipSettlementModal({ open: false })} className="text-black/20 hover:text-black">
+                    <X size={24} />
+                  </button>
+                </div>
+
+                <div className="bg-[#F9F9F9] p-6 rounded-3xl mb-8">
+                  <p className="text-black/40 text-xs uppercase tracking-widest mb-1">Total Acumulado</p>
+                  <p className="text-4xl font-mono font-bold">R$ {vipSettlementModal.vip.total_acumulado.toFixed(2)}</p>
+                </div>
+
+                <div className="space-y-4">
+                  <p className="text-sm font-medium text-black/60 uppercase tracking-wider">Selecione o Método de Pagamento</p>
+                  <div className="grid grid-cols-2 gap-3">
+                    {["PIX", "Débito", "Crédito", "Dinheiro"].map(m => (
+                      <button
+                        key={m}
+                        onClick={() => setVipSettlementModal({ ...vipSettlementModal, method: m })}
+                        className={cn(
+                          "py-3 rounded-xl font-bold transition-all border",
+                          vipSettlementModal.method === m ? "bg-black text-white border-black" : "bg-white border-black/10 hover:border-black/20"
+                        )}
+                      >
+                        {m}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <button
+                  onClick={() => settleVipAccount(vipSettlementModal.vip!.id, vipSettlementModal.method!, vipSettlementModal.vip!.total_acumulado)}
+                  disabled={!vipSettlementModal.method}
+                  className="w-full mt-8 py-4 bg-emerald-500 text-white rounded-2xl font-bold hover:bg-emerald-600 transition-all disabled:opacity-30 flex items-center justify-center gap-2"
+                >
+                  <CheckCircle2 size={20} /> Finalizar Acerto
                 </button>
               </div>
             </motion.div>

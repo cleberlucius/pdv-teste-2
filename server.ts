@@ -127,6 +127,33 @@ async function startServer() {
     res.json(vips);
   });
 
+  app.post("/api/vips/pagar", (req, res) => {
+    const { id, metodo_pagamento, total } = req.body;
+    
+    const settleVip = db.transaction(() => {
+      const vip = db.prepare("SELECT * FROM vips WHERE id = ?").get() as any;
+      if (!vip) throw new Error("VIP não encontrado");
+
+      // Create a sale for the settlement
+      db.prepare(`
+        INSERT INTO vendas (itens, total, metodo_pagamento, troco, status) 
+        VALUES (?, ?, ?, ?, ?)
+      `).run(JSON.stringify([{ nome: `Acerto VIP: ${vip.nome}`, preco: total, quantidade: 1 }]), total, metodo_pagamento, 0, 'pago');
+
+      // Reset VIP balance
+      db.prepare("UPDATE vips SET total_acumulado = 0 WHERE id = ?").run(id);
+
+      return true;
+    });
+
+    try {
+      settleVip();
+      res.json({ success: true });
+    } catch (error: any) {
+      res.status(400).json({ error: error.message });
+    }
+  });
+
   app.post("/api/reset", (req, res) => {
     db.exec(`
       DELETE FROM vendas;
